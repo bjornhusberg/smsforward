@@ -1,0 +1,60 @@
+#!/bin/bash
+
+if [ "$#" != "2" ]; then
+  echo "Usage: $0 <hilink device ip> <phone number>"
+  exit 1
+fi
+
+ENDPOINT=$1
+NUMBER=$2
+
+function getCredentials() {
+  TOKEN_RESPONSE=$(curl -s -X GET http://$ENDPOINT/api/webserver/SesTokInfo)
+  COOKIE=$(echo "$TOKEN_RESPONSE" | xmllint --xpath '/response/SesInfo/text()' -)
+  TOKEN=$(echo "$TOKEN_RESPONSE" | xmllint --xpath '/response/TokInfo/text()' -)
+}
+
+while true; do
+
+  echo "Reading last message"
+
+  getCredentials
+  RESPONSE=$(curl -s -b $COOKIE -c $COOKIE -H "X-Requested-With: XMLHttpRequest" --data "<request><PageIndex>1</PageIndex><ReadCount>1</ReadCount><BoxType>1</BoxType><SortType>0</SortType><Ascending>0</Ascending><UnreadPreferred>1</UnreadPreferred></request>" http://$ENDPOINT/api/sms/sms-list --header "__RequestVerificationToken: $TOKEN" --header "Content-Type:text/xml")
+
+  COUNT=$(echo "$RESPONSE" | xmllint --xpath '/response/Count/text()' -)
+
+  if [ "$COUNT" == "0" ]; then
+    echo "No new messages"
+    exit 0
+  fi
+
+  CONTENT=$(echo "$RESPONSE" | xmllint --xpath '/response/Messages/Message/Content/text()' -)
+  PHONE=$(echo "$RESPONSE" | xmllint --xpath '/response/Messages/Message/Phone/text()' -)
+  INDEX=$(echo "$RESPONSE" | xmllint --xpath '/response/Messages/Message/Index/text()' -)
+
+  echo "Forwarding message $INDEX from $PHONE to $NUMBER: $CONTENT"
+
+  SMS="$PHONE: $CONTENT"
+
+  getCredentials
+  RESPONSE=$(curl -s http://$ENDPOINT/api/sms/send-sms -H "Cookie: $COOKIE" -H "__RequestVerificationToken: $TOKEN" -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" --data "<?xml version='1.0' encoding='UTF-8'?><request><Index>-1</Index><Phones><Phone>$NUMBER</Phone></Phones><Sca></Sca><Content>$SMS</Content><Length>11</Length><Reserved>1</Reserved><Date>-1</Date></request>")
+
+  RESPONSE_CODE=$(echo "$RESPONSE" | xmllint --xpath '/response/text()' -)
+  if [ "$RESPONSE_CODE" != "OK" ]; then
+    echo "Failed to send message"
+    exit 1
+  fi
+
+
+  echo "Deleting message $INDEX"
+
+  getCredentials
+  RESPONSE=$(curl -s http://$ENDPOINT/api/sms/delete-sms -H "Cookie: $COOKIE" -H "__RequestVerificationToken: $TOKEN" -H "Content-Type: application/x-www-form-urlencoded; charset=UTF-8" --data "<?xml version='1.0' encoding='UTF-8'?><request><Index>$INDEX</Index></request>")
+  
+  RESPONSE_CODE=$(echo "$RESPONSE" | xmllint --xpath '/response/text()' -)
+  if [ "$RESPONSE_CODE" != "OK" ]; then
+    echo "Failed to delete message"
+    exit 1
+  fi
+
+done
